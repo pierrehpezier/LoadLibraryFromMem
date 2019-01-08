@@ -1,5 +1,6 @@
 #include "include/LoadLibrary.h"
 
+
 HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 {
 #if defined(_WIN64)
@@ -22,11 +23,9 @@ HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 		return NULL;
 	}
 #if defined(_WIN64)
-	/* Microsoft Windows (64-bit) */
 	PIMAGE_NT_HEADERS64 NT_HEADERS = (PIMAGE_NT_HEADERS64)&buffer[DOS_HEADER->e_lfanew];
 #elif defined(_WIN32)
 	PIMAGE_NT_HEADERS32 NT_HEADERS = (PIMAGE_NT_HEADERS32)&buffer[DOS_HEADER->e_lfanew];
-	/* Microsoft Windows (32-bit) */
 #endif
 	if(NT_HEADERS->Signature != 0x4550) {
 #ifdef DEBUG
@@ -41,64 +40,84 @@ HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 #endif
 		  return NULL;
   }
-  //_mysection mysection = new _mysection[NT_HEADERS->FileHeader.NumberOfSections];
-
-  mysection *section_array = (mysection*)VirtualAlloc(NULL, NT_HEADERS->FileHeader.NumberOfSections*sizeof(mysection), MEM_COMMIT, PAGE_READWRITE);
-  if(section_array == NULL) {
-#ifdef DEBUG
-  		std::cerr << "unable to allocate" << std::endl;
-#endif
-      return NULL;
-  }
-  bool allocated = TRUE;
-  for(uint32_t secnb=0; secnb<NT_HEADERS->FileHeader.NumberOfSections; secnb++) {
+  //Find the executable virtual size
+  size_t high = 0, low = -1;
+  for(DWORD secnb=0; secnb<NT_HEADERS->FileHeader.NumberOfSections; secnb++) {
       PIMAGE_SECTION_HEADER section = (PIMAGE_SECTION_HEADER)&buffer[headerlen + sizeof(IMAGE_SECTION_HEADER) * secnb];
 #ifdef DEBUG
       std::cout << "New section found: "  << section->Name << std::endl;
 #endif
-      section_array[secnb].address = (void *)VirtualAlloc(NULL, section->Misc.VirtualSize, MEM_COMMIT, section->Characteristics);
-      if(section_array[secnb].address == NULL) {
-        allocated = FALSE;
-      }
+	  if (section->Misc.VirtualSize + section->VirtualAddress > high)
+		  high = section->Misc.VirtualSize + section->VirtualAddress;
+	  if (section->VirtualAddress < low)
+		  low = section->VirtualAddress;
   }
-  if(!allocated) {
+  void *ImageBase = (void *)VirtualAlloc(NULL, high, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+  if (ImageBase == NULL) {
+	  return NULL;
+  }
+  CopyMemory(ImageBase, buffer, headerlen);//IMAGE BASE
+  //Copy the data to the image
+  for (DWORD secnb = 0; secnb<NT_HEADERS->FileHeader.NumberOfSections; secnb++) {
+	  PIMAGE_SECTION_HEADER section = (PIMAGE_SECTION_HEADER)&buffer[headerlen + sizeof(IMAGE_SECTION_HEADER) * secnb];
+	  CopyMemory((char *)ImageBase + section->VirtualAddress, &buffer[section->PointerToRawData], section->SizeOfRawData);
+  }
+  //Restore the IATS 
+  for (DWORD dllnb = 0;;dllnb++) {
+	  PIMAGE_IMPORT_DESCRIPTOR importdescriptor;
+	  importdescriptor = PIMAGE_IMPORT_DESCRIPTOR((char *)ImageBase + NT_HEADERS->OptionalHeader.DataDirectory[1].VirtualAddress + sizeof(IMAGE_IMPORT_DESCRIPTOR)*dllnb);
+	  if (importdescriptor->Name == NULL)
+		  break;
+	  for (DWORD funcnb = 0;; funcnb++) {
+		  PMYIMAGE_THUNK_DATA thunk1 = PMYIMAGE_THUNK_DATA((char *)ImageBase + importdescriptor->OriginalFirstThunk + funcnb * sizeof(PMYIMAGE_THUNK_DATA));
+		  PMYIMAGE_THUNK_DATA thunk2 = PMYIMAGE_THUNK_DATA((char *)ImageBase + importdescriptor->FirstThunk + funcnb * sizeof(PMYIMAGE_THUNK_DATA));
+		  if (thunk1->u1.ForwarderString == NULL || thunk2->u1.AddressOfData == NULL) {
+			  break;
+		  }
+		  thunk2->u1.AddressOfData = (ULONGLONG)GetProcAddress(LoadLibraryA((char *)ImageBase + importdescriptor->Name), (char *)ImageBase + thunk1->u1.ForwarderString + 2);
+		  if (thunk2->u1.AddressOfData == NULL) {
 #ifdef DEBUG
-    std::cerr << "unable to allocate all sections" << std::endl;
+			  std::cerr << "failed to load" << (char *)ImageBase + importdescriptor->Name << ":" << (char *)ImageBase + thunk1->u1.ForwarderString + 2 << std::endl;
 #endif
-    for(uint32_t secnb=0; secnb<NT_HEADERS->FileHeader.NumberOfSections; secnb++) {
-      if(section_array[secnb].address != NULL) {
-        VirtualFree(section_array[secnb].address, 0, MEM_RELEASE);
-      }
-    }
-    VirtualFree(section_array, 0, MEM_RELEASE);
-    return 0;
+			  return NULL;
+		  }
+	  }
   }
-  VirtualFree(section_array, 0, MEM_RELEASE);
+  //parse relocation
+  /*
+  IMAGE_RELOCATION relocation = IMAGE_RELOCATION((char *)ImageBase + NT_HEADERS->OptionalHeader.DataDirectory[6].VirtualAddress + sizeof(IMAGE_IMPORT_DESCRIPTOR)*dllnb);
+  */
+  //Restore the rights
+  for (DWORD secnb = 0; secnb<NT_HEADERS->FileHeader.NumberOfSections; secnb++) {
+	  PIMAGE_SECTION_HEADER section = (PIMAGE_SECTION_HEADER)&buffer[headerlen + sizeof(IMAGE_SECTION_HEADER) * secnb];
+	  DWORD myoldprotect = 0;
+	  VirtualProtect(&((char *)ImageBase)[section->VirtualAddress], section->Misc.VirtualSize, section->Characteristics, &myoldprotect);
+  }
 #ifdef DEBUG
     std::cerr << "SUCCESS" << std::endl;
 #endif
-	return NULL;
+	return (HMODULE)ImageBase;
 }
 
 
 #ifdef DEBUG
 int main(int argc, char **argv)
 {
-	if(argc != 2) {
-		std::cerr << "usage: " << argv[0] << " <file.dll>" << std::endl;
-		return -1;
-	}
-	std::ifstream infile(argv[1], std::ios::binary);
+	std::ifstream infile("build/hello64.dll", std::ios::binary);
+	HMODULE mylib = NULL;
 	if(infile.is_open()) {
 		infile.seekg (0, infile.end);
 		size_t length = infile.tellg();
 		infile.seekg (0, infile.beg);
 		char *buffer = new char[length];
 		infile.read(buffer, length);
-		LoadLibraryFomMem(buffer, length);
+		mylib = LoadLibraryFomMem(buffer, length);
 		delete[] buffer;
 	}
 	infile.close();
+	typedef void (WINAPI *_hello)(void);
+	_hello hello = (_hello)((char *)mylib + 0x1450);
+	hello();
 	return 0;
 }
 #endif
