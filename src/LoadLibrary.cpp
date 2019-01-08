@@ -62,20 +62,20 @@ HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 	  PIMAGE_SECTION_HEADER section = (PIMAGE_SECTION_HEADER)&buffer[headerlen + sizeof(IMAGE_SECTION_HEADER) * secnb];
 	  CopyMemory((char *)ImageBase + section->VirtualAddress, &buffer[section->PointerToRawData], section->SizeOfRawData);
   }
-  //Restore the IATS 
+  //Restore the IATS
   for (DWORD dllnb = 0;;dllnb++) {
 	  PIMAGE_IMPORT_DESCRIPTOR importdescriptor;
 	  importdescriptor = PIMAGE_IMPORT_DESCRIPTOR((char *)ImageBase + NT_HEADERS->OptionalHeader.DataDirectory[1].VirtualAddress + sizeof(IMAGE_IMPORT_DESCRIPTOR)*dllnb);
-	  if (importdescriptor->Name == NULL)
+	  if (importdescriptor->Name == 0)
 		  break;
 	  for (DWORD funcnb = 0;; funcnb++) {
 		  PMYIMAGE_THUNK_DATA thunk1 = PMYIMAGE_THUNK_DATA((char *)ImageBase + importdescriptor->OriginalFirstThunk + funcnb * sizeof(PMYIMAGE_THUNK_DATA));
 		  PMYIMAGE_THUNK_DATA thunk2 = PMYIMAGE_THUNK_DATA((char *)ImageBase + importdescriptor->FirstThunk + funcnb * sizeof(PMYIMAGE_THUNK_DATA));
-		  if (thunk1->u1.ForwarderString == NULL || thunk2->u1.AddressOfData == NULL) {
+		  if (thunk1->u1.ForwarderString == 0 || thunk2->u1.AddressOfData == 0) {
 			  break;
 		  }
 		  thunk2->u1.AddressOfData = (ULONGLONG)GetProcAddress(LoadLibraryA((char *)ImageBase + importdescriptor->Name), (char *)ImageBase + thunk1->u1.ForwarderString + 2);
-		  if (thunk2->u1.AddressOfData == NULL) {
+		  if (thunk2->u1.AddressOfData == 0) {
 #ifdef DEBUG
 			  std::cerr << "failed to load" << (char *)ImageBase + importdescriptor->Name << ":" << (char *)ImageBase + thunk1->u1.ForwarderString + 2 << std::endl;
 #endif
@@ -84,9 +84,7 @@ HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 	  }
   }
   //parse relocation
-  /*
-  IMAGE_RELOCATION relocation = IMAGE_RELOCATION((char *)ImageBase + NT_HEADERS->OptionalHeader.DataDirectory[6].VirtualAddress + sizeof(IMAGE_IMPORT_DESCRIPTOR)*dllnb);
-  */
+  //IMAGE_RELOCATION relocation = IMAGE_RELOCATION((char *)ImageBase + NT_HEADERS->OptionalHeader.DataDirectory[6].VirtualAddress + sizeof(IMAGE_IMPORT_DESCRIPTOR)*dllnb);
   //Restore the rights
   for (DWORD secnb = 0; secnb<NT_HEADERS->FileHeader.NumberOfSections; secnb++) {
 	  PIMAGE_SECTION_HEADER section = (PIMAGE_SECTION_HEADER)&buffer[headerlen + sizeof(IMAGE_SECTION_HEADER) * secnb];
@@ -99,11 +97,38 @@ HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 	return (HMODULE)ImageBase;
 }
 
+FARPROC GetProcAddressFomMem(HMODULE hModule, LPCSTR  lpProcName)
+{
+	if(hModule == NULL)
+		return NULL;
+	PIMAGE_DOS_HEADER DOS_HEADER = (PIMAGE_DOS_HEADER)hModule;
+#if defined(_WIN64)
+		PIMAGE_NT_HEADERS64 NT_HEADERS = (PIMAGE_NT_HEADERS64)((char *)hModule + DOS_HEADER->e_lfanew);
+#elif defined(_WIN32)
+		PIMAGE_NT_HEADERS32 NT_HEADERS = (PIMAGE_NT_HEADERS32)((char *)hModule + DOS_HEADER->e_lfanew);
+#endif
+	PIMAGE_EXPORT_DIRECTORY exportdir = (PIMAGE_EXPORT_DIRECTORY)((char *)hModule + NT_HEADERS->OptionalHeader.DataDirectory[0].VirtualAddress);
+	if(exportdir->AddressOfNames == 0 || exportdir->AddressOfFunctions == 0) {
+		return NULL;
+	}
+	for(DWORD exportnb=0; exportnb < exportdir->NumberOfNames; exportnb++) {
+			LPDWORD name = (LPDWORD)((char *)hModule + exportdir->AddressOfNames + sizeof(DWORD) * exportnb);
+			if(strcmp((char *)hModule + name[0], lpProcName) == 0) {
+				LPDWORD funcaddr = (LPDWORD)((char *)hModule + exportdir->AddressOfFunctions + sizeof(DWORD) * exportnb);
+				return (FARPROC)((char *)hModule + funcaddr[0]);
+			}
+	}
+	return NULL;
+}
 
 #ifdef DEBUG
 int main(int argc, char **argv)
 {
-	std::ifstream infile("build/hello64.dll", std::ios::binary);
+	#if defined(_WIN64)
+		std::ifstream infile("build/hello64.dll", std::ios::binary);
+	#elif defined(_WIN32)
+		std::ifstream infile("build/hello32.dll", std::ios::binary);
+	#endif
 	HMODULE mylib = NULL;
 	if(infile.is_open()) {
 		infile.seekg (0, infile.end);
@@ -115,8 +140,9 @@ int main(int argc, char **argv)
 		delete[] buffer;
 	}
 	infile.close();
+
 	typedef void (WINAPI *_hello)(void);
-	_hello hello = (_hello)((char *)mylib + 0x1450);
+	_hello hello = (_hello)GetProcAddressFomMem(mylib, "hello");
 	hello();
 	return 0;
 }

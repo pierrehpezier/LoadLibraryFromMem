@@ -1,7 +1,7 @@
 CC=gcc
 W32CC=i686-w64-mingw32-g++
 W64CC=x86_64-w64-mingw32-g++
-CFLAGS=-std=c++11 -I.
+CFLAGS=-std=c++11 -I. -Wall -Werror
 LDFLAGS=-static-libstdc++ -static-libgcc -lpthread -static -pipe
 
 all: _samples main
@@ -12,6 +12,7 @@ _samples:
 
 main:
 	$(W32CC) src/LoadLibrary.cpp -o build/debug32.exe $(CFLAGS) $(LDFLAGS) -DDEBUG
+	$(W64CC) src/LoadLibrary.cpp -o build/debug64.exe $(CFLAGS) $(LDFLAGS) -DDEBUG
 
 clean:
 	rm -rf build/*
