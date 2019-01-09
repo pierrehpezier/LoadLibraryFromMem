@@ -2,7 +2,7 @@ CC=gcc
 W32CC=i686-w64-mingw32-g++
 W64CC=x86_64-w64-mingw32-g++
 CFLAGS=-std=c++11 -I. -Wall -Werror -masm=intel
-LDFLAGS=-static-libstdc++ -static-libgcc -lpthread -static -pipe
+LDFLAGS=-static-libstdc++ -static-libgcc -lpthread -static -pipe -lwininet
 
 all: _samples debug shellcodes
 

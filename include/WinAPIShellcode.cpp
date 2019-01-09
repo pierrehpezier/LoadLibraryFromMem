@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <winternl.h>
+#include <wininet.h>
 
 void* getkernel32handle(void);
 bool match_ascii(char* s1, char* s2);
@@ -15,6 +16,47 @@ DWORD mystrlen(char* s)
 	for(int i=0;; i++)
 		if(s[i] == '\x00')
 			return i;
+}
+void* getkernel32handle(void)
+{
+	char kernel32_dll_strz[] = "kernel32.dll";
+	return MyLoadLibrary(kernel32_dll_strz);
+}
+void MySleep(DWORD dwMilliseconds)
+{
+    char Sleep_strz[] = "Sleep";
+    void *_MySleep = MyGetProcAddress(getkernel32handle(), Sleep_strz);
+    return (*(void(*)(DWORD))_MySleep)(dwMilliseconds);
+}
+void* getwininethandle(void)
+{
+	char wininet_dll_strz[] = "wininet.dll";
+	return MyLoadLibrary(wininet_dll_strz);
+}
+HINTERNET MyInternetOpenUrlA(HINTERNET hInternet, LPCSTR lpszUrl, LPCSTR lpszHeaders, DWORD dwHeadersLength, DWORD dwFlags, DWORD_PTR dwContext)
+{
+    char InternetOpenUrlA_strz[] = "InternetOpenUrlA";
+    void *_MyInternetOpenUrlA = MyGetProcAddress(getwininethandle(), InternetOpenUrlA_strz);
+    return (*(HINTERNET(*)(HINTERNET, LPCSTR, LPCSTR, DWORD, DWORD, DWORD_PTR))_MyInternetOpenUrlA)(hInternet, lpszUrl, lpszHeaders, dwHeadersLength, dwFlags, dwContext);
+}
+HINTERNET MyInternetOpenA(LPCSTR lpszAgent, DWORD dwAccessType, LPCSTR lpszProxy, LPCSTR lpszProxyBypass, DWORD dwFlags)
+{
+    char InternetOpenA_strz[] = "InternetOpenA";
+    void *_MyInternetOpenA = MyGetProcAddress(getwininethandle(), InternetOpenA_strz);
+    return (*(HINTERNET(*)(LPCSTR, DWORD, LPCSTR, LPCSTR, DWORD))_MyInternetOpenA)(lpszAgent, dwAccessType, lpszProxy, lpszProxyBypass, dwFlags);
+}
+BOOL MyInternetCloseHandle(HINTERNET hInternet)
+{
+    char InternetCloseHandle_strz[] = "InternetCloseHandle";
+    void *_MyInternetCloseHandle = MyGetProcAddress(getwininethandle(), InternetCloseHandle_strz);
+    return (*(BOOL(*)(HINTERNET))_MyInternetCloseHandle)(hInternet);
+}
+
+BOOL MyInternetReadFile(HINTERNET hFile, LPVOID lpBuffer, DWORD dwNumberOfBytesToRead, LPDWORD lpdwNumberOfBytesRead)
+{
+    char InternetReadFile_strz[] = "InternetReadFile";
+    void *_MyInternetReadFile = MyGetProcAddress(getwininethandle(), InternetReadFile_strz);
+    return (*(BOOL(*)(HINTERNET, LPVOID, DWORD, LPDWORD))_MyInternetReadFile)(hFile, lpBuffer, dwNumberOfBytesToRead, lpdwNumberOfBytesRead);
 }
 
 bool mystrcmp(char *s1, char *s2)
@@ -59,13 +101,6 @@ BOOL MyVirtualProtect(LPVOID lpAddress, SIZE_T dwSize, DWORD flNewProtect, PDWOR
 	void *_myVirtualProtect = MyGetProcAddress(getkernel32handle(), VirtualProtect_strz);
 	return (*(BOOL(*)(LPVOID, SIZE_T, DWORD, PDWORD))_myVirtualProtect)(lpAddress, dwSize, flNewProtect, lpfOldProtect);
 }
-
-
-void* getkernel32handle(void)
-{
-	char kernel32_dll_strz[] = "kernel32.dll";
-	return MyLoadLibrary(kernel32_dll_strz);
-}
 /*!
  * Compare 2 strings
  * \param s1 A string
@@ -105,14 +140,10 @@ char* fullpathrorelative(char* uniname)
  */
 void *MyGetProcAddress(void* module, char* function)
 {
-	#ifdef NATIVE
-	return (void*)GetProcAddress((HMODULE)module, function);
-	#else
 	char funcname[]="GetProcAddress";
 	void* _mygetprocaddress=GetExistingProcAddress( getkernel32handle(), funcname );
 	void* retval=(*(void*(*)(void*, char*))_mygetprocaddress)(module, function);
 	return retval;
-	#endif
 }
 
 /*!
@@ -165,7 +196,7 @@ bool match_unicode(char* uniname, char* name)
 	}
 	return true;
 }
-#ifndef NATIVE
+
 void* LoadExistingLibrary(const char* name)
 {
 	PLIST_ENTRY entry;
@@ -197,7 +228,6 @@ void* LoadExistingLibrary(const char* name)
 	}
 	return 0;
 }
-#endif
 /*!
  * Custom loadlibrary which does not uses the Windows API
  * \param name The library name
@@ -207,9 +237,6 @@ void* LoadExistingLibrary(const char* name)
 void* MyLoadLibrary(const char * name)
 {
 	//Do not touch this sh*t
-	#ifdef NATIVE
-	return (void*)LoadLibraryA(name);
-	#else
 	char funcname[]="LoadLibraryA";
 	char libname[]="kernel32.dll";
 	void* lib=LoadExistingLibrary(name);
@@ -219,5 +246,4 @@ void* MyLoadLibrary(const char * name)
 	void* _myloadlibrarya=MyGetProcAddress( LoadExistingLibrary(libname), funcname );
 	void*retval=(*(void*(*)(char*))_myloadlibrarya)((char*)name);
 	return retval;
-	#endif
 }
